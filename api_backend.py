@@ -905,7 +905,7 @@ if __name__ == "__main__":
     print("📊 Frontend will receive exact same output as CLI main.py analyze")
     print("🔗 CORS enabled for localhost:3000, localhost:5173, localhost:5174")
     
-    # Use PORT environment variable for deployment (Render, Heroku, etc.)
+    # Use PORT environment variable for deployment (DigitalOcean, Render, Heroku, etc.)
     port = int(os.environ.get("PORT", 8000))
     print(f"💡 Access test endpoint at: http://localhost:{port}/api/test")
     uvicorn.run(app, host="0.0.0.0", port=port, reload=False)

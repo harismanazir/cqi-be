@@ -1,0 +1,22 @@
+name: cqi-backend
+services:
+- name: api
+  source_dir: /
+  github:
+    repo: your-username/your-repo-name
+    branch: main
+  run_command: python api_backend.py
+  environment_slug: python
+  instance_count: 1
+  instance_size_slug: basic-xxs
+  envs:
+  - key: PORT
+    value: "8080"
+  - key: GROQ_API_KEY
+    value: "your-groq-api-key"
+    type: SECRET
+  http_port: 8080
+  health_check:
+    http_path: /api/test
+  routes:
+  - path: /
