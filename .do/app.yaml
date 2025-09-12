@@ -8,13 +8,15 @@ services:
   run_command: python api_backend.py
   environment_slug: python
   instance_count: 1
-  instance_size_slug: basic-xxs
+  instance_size_slug: professional-xs
   envs:
   - key: PORT
     value: "8080"
   - key: GROQ_API_KEY
     value: "your-groq-api-key"
     type: SECRET
+  - key: TRANSFORMERS_AVAILABLE
+    value: "false"
   http_port: 8080
   health_check:
     http_path: /api/test
