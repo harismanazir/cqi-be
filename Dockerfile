@@ -17,8 +17,25 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy the entire application
+# Copy the application code - EXCLUDE problematic directories
 COPY . .
+
+# CRITICAL: Remove analysis cache and other problematic directories that cause deployment failures
+RUN rm -rf .analysis_cache/ \
+    && rm -rf .rag_cache/ \
+    && rm -rf __pycache__/ \
+    && rm -rf .git/ \
+    && rm -rf .vscode/ \
+    && rm -rf .idea/ \
+    && rm -rf *.pkl \
+    && rm -rf temp/ \
+    && rm -rf tmp/ \
+    && find . -name "*.pyc" -delete \
+    && find . -name "__pycache__" -type d -exec rm -rf {} + || true
+
+# Create necessary runtime directories (empty)
+RUN mkdir -p .analysis_cache/analyses \
+    && mkdir -p .analysis_cache/embeddings
 
 # Create a non-root user for security
 RUN useradd --create-home --shell /bin/bash app && \
