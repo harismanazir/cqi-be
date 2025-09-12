@@ -5,10 +5,10 @@ uvicorn[standard]==0.24.0
 pydantic==2.5.0
 python-multipart==0.0.6
 
-# Essential AI packages (NO heavy ML)
-langchain-groq==0.1.9
-langchain-core==0.1.52
-langgraph==0.1.1
+# Essential AI packages - compatible versions
+langchain-groq>=0.1.9
+langchain-core>=0.2.26
+langgraph>=0.1.1
 
 # Environment utilities
 python-dotenv==1.0.0
