@@ -1,54 +1,60 @@
-# Use Python 3.11 slim image for better performance
+# Ultra-fast Dockerfile using uv for lightning-fast builds
 FROM python:3.11-slim
+
+# Install uv - the blazing fast Python package manager
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies including git
+# Install system dependencies (minimal)
 RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
     git \
-    && rm -rf /var/lib/apt/lists/*
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
-# Copy requirements first for better Docker layer caching
+# Copy dependency files
 COPY requirements.txt .
+COPY pyproject.toml* ./
 
-# Install Python dependencies with explicit Git packages
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir GitPython==3.1.40 PyGithub==1.59.1 && \
-    pip install --no-cache-dir -r requirements.txt
+# Install dependencies using uv (10x faster than pip) with ML support
+# Install PyTorch CPU-only first to reduce memory usage
+RUN uv pip install --system --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+RUN uv pip install --system --no-cache-dir -r requirements.txt
 
-# Verify Git packages are installed
-RUN python -c "import git; import github; print('✅ Git dependencies verified')" || exit 1
+# Verify critical imports
+RUN python -c "import fastapi, uvicorn, git, github; print('✅ Core dependencies verified')"
 
-# Copy the application code - EXCLUDE problematic directories
+# Copy application code
 COPY . .
 
-# CRITICAL: Remove analysis cache and other problematic directories that cause deployment failures
-RUN rm -rf .analysis_cache/ \
-    && rm -rf .rag_cache/ \
-    && rm -rf __pycache__/ \
-    && rm -rf .git/ \
-    && rm -rf .vscode/ \
-    && rm -rf .idea/ \
-    && rm -rf *.pkl \
-    && rm -rf temp/ \
-    && rm -rf tmp/ \
+# Remove unnecessary files that cause deployment issues
+RUN rm -rf \
+    .analysis_cache/ \
+    .rag_cache/ \
+    __pycache__/ \
+    .git/ \
+    .vscode/ \
+    .idea/ \
+    *.pkl \
+    temp/ \
+    tmp/ \
+    .pytest_cache/ \
     && find . -name "*.pyc" -delete \
-    && find . -name "__pycache__" -type d -exec rm -rf {} + || true
+    && find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 
-# Create necessary runtime directories (empty)
-RUN mkdir -p .analysis_cache/analyses \
-    && mkdir -p .analysis_cache/embeddings
-
-# Create a non-root user for security
-RUN useradd --create-home --shell /bin/bash app && \
+# Create app user for security
+RUN useradd --create-home --shell /bin/bash --uid 1000 app && \
     chown -R app:app /app
 USER app
 
-# Expose the port that the app runs on
+# Expose port
 EXPOSE 8000
 
-# Command to run the application
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/api/test || exit 1
+
+# Start application
 CMD ["python", "api_backend.py"]
