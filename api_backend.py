@@ -1,8 +1,7 @@
-
 #!/usr/bin/env python3
 """
 FastAPI Backend for LangGraph Code Quality Intelligence
-Fixed version to ensure seamless frontend-backend connectivity
+Fixed version with progressive analysis and proper model definitions
 """
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
@@ -18,6 +17,7 @@ import zipfile
 import json
 import shutil
 from extensions.github_integration import GitHubRepoAnalyzer
+
 # Import your LangGraph system (these must exist in your project)
 try:
     from main import LangGraphCQI
@@ -84,7 +84,7 @@ except ImportError as e:
             })()
 
 # ---------------------------
-# Pydantic models (Updated to match CLI output)
+# Pydantic models (Complete definitions)
 # ---------------------------
 
 class IssueModel(BaseModel):
@@ -121,7 +121,6 @@ class AnalysisResult(BaseModel):
 
     # Agent performance
     agent_performance: List[AgentPerformance]
-
     agent_breakdown: Dict[str, int] = {}
 
     # Detailed issues (top 20)
@@ -130,6 +129,36 @@ class AnalysisResult(BaseModel):
     # Additional metadata
     timestamp: str
     job_id: str
+
+# FIXED: Add the missing BackendResultsResponse model
+class BackendResultsResponse(BaseModel):
+    success: bool
+    job_id: str
+    results: List[AnalysisResult]
+    total_files: int
+    completion_time: str
+    github_metadata: Optional[Dict[str, Any]] = None
+
+# NEW: Progressive analysis models
+class PartialResultsResponse(BaseModel):
+    success: bool
+    partial: bool
+    completed_files: int
+    total_files: int
+    progress: int
+    job_id: str
+    results: List[AnalysisResult]
+    github_metadata: Optional[Dict[str, Any]] = None
+
+class ProgressiveWebSocketMessage(BaseModel):
+    type: str  # 'progress', 'partial_results', 'final_results'
+    job_id: str
+    progress: Optional[int] = None
+    message: Optional[str] = None
+    completed_files: Optional[int] = None
+    total_files: Optional[int] = None
+    results: Optional[List[AnalysisResult]] = None
+    timestamp: str
 
 class ChatMessage(BaseModel):
     session_id: str
@@ -145,11 +174,31 @@ class AnalyzeRequest(BaseModel):
     file_paths: List[str]
     detailed: bool = True
     rag: bool = True
+    progressive: bool = True  # NEW: Progressive analysis flag
 
 class ChatStartRequest(BaseModel):
     upload_dir: str = ""
     github_repo: str = ""
     branch: str = ""
+
+class GitHubAnalyzeRequest(BaseModel):
+    repo_url: str
+    branch: str = "main"
+    agents: List[str] = ["security", "performance", "complexity", "documentation"]
+    detailed: bool = True
+    progressive: bool = True  # NEW: Progressive analysis support
+
+class GitHubValidationResponse(BaseModel):
+    valid: bool
+    owner: Optional[str] = None
+    repo_name: Optional[str] = None
+    description: Optional[str] = None
+    language: Optional[str] = None
+    branches: Optional[List[str]] = None
+    error: Optional[str] = None
+
+class GitHubValidateRequest(BaseModel):
+    repo_url: str
 
 # ---------------------------
 # FastAPI app + CORS
@@ -157,8 +206,8 @@ class ChatStartRequest(BaseModel):
 
 app = FastAPI(
     title="LangGraph Code Quality Intelligence API",
-    description="Seamless integration with LangGraph multi-agent analysis",
-    version="2.0.0"
+    description="Progressive analysis with real-time updates",
+    version="2.1.0"
 )
 
 app.add_middleware(
@@ -175,9 +224,8 @@ app.add_middleware(
 
 analysis_jobs: Dict[str, Dict] = {}
 websocket_connections: Dict[str, WebSocket] = {}
-
-# IMPORTANT: Store GitHub temp directories to prevent cleanup
 github_temp_dirs: Dict[str, str] = {}
+qa_agents: Dict[str, EnhancedQAAgent] = {}
 
 def generate_job_id() -> str:
     return str(uuid.uuid4())
@@ -193,8 +241,6 @@ def normalize_github_url(url: str) -> str:
     url = url.replace('git@github.com:', '')
     url = url.replace('.git', '')
     return url.lower()
-
-# Complete fix for api_backend.py - replace the entire convert_langgraph_output_to_api_format function
 
 def convert_langgraph_output_to_api_format(raw_result: Dict, job_id: str, file_path: str) -> AnalysisResult:
     """Convert raw LangGraph output to API format that matches CLI output exactly"""
@@ -412,7 +458,7 @@ def convert_langgraph_output_to_api_format(raw_result: Dict, job_id: str, file_p
     result = AnalysisResult(
         file=file_name,
         language=language,
-        lines=lines_of_code,  # This should now be > 0
+        lines=lines_of_code,
         total_issues=len(all_issues),
         processing_time=processing_time,
         tokens_used=raw_result.get('total_tokens', 0),
@@ -441,22 +487,42 @@ def convert_langgraph_output_to_api_format(raw_result: Dict, job_id: str, file_p
     print(f"  Severity breakdown: Critical={result.critical_issues}, High={result.high_issues}, Medium={result.medium_issues}, Low={result.low_issues}")
     
     return result
-    
 
+# Enhanced broadcast function
 async def broadcast_progress(job_id: str, progress: int, message: str):
-    """Send progress updates via WebSocket"""
+    """Enhanced progress broadcasting with more details"""
     print(f"[WEBSOCKET] Broadcasting progress for {job_id}: {progress}% - {message}")
     if job_id in websocket_connections:
         try:
+            job = analysis_jobs.get(job_id, {})
             await websocket_connections[job_id].send_json({
                 "type": "progress",
                 "job_id": job_id,
                 "progress": progress,
                 "message": message,
+                "completed_files": job.get("completed_files", 0),
+                "total_files": job.get("total_files", 0),
                 "timestamp": datetime.now().isoformat()
             })
         except Exception as e:
             print(f"[WEBSOCKET] Error broadcasting: {e}")
+            websocket_connections.pop(job_id, None)
+
+async def broadcast_partial_results(job_id: str, partial_results: List[AnalysisResult]):
+    """Broadcast partial results to connected clients"""
+    if job_id in websocket_connections:
+        try:
+            job = analysis_jobs.get(job_id, {})
+            await websocket_connections[job_id].send_json({
+                "type": "partial_results",
+                "job_id": job_id,
+                "results": [result.dict() for result in partial_results],
+                "completed_files": len(partial_results),
+                "total_files": job.get("total_files", 0),
+                "timestamp": datetime.now().isoformat()
+            })
+        except Exception as e:
+            print(f"[WEBSOCKET] Error broadcasting partial results: {e}")
             websocket_connections.pop(job_id, None)
 
 # ---------------------------
@@ -468,7 +534,8 @@ async def root():
     return {
         "message": "LangGraph Code Quality Intelligence API", 
         "status": "online", 
-        "version": "2.0.0",
+        "version": "2.1.0",
+        "progressive_analysis": True,
         "timestamp": datetime.now().isoformat()
     }
 
@@ -542,95 +609,167 @@ async def upload_files(files: List[UploadFile] = File(...)):
         print(f"[UPLOAD] Error: {e}")
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
-@app.post("/api/analyze/{job_id}")
-async def start_analysis(job_id: str, request: AnalyzeRequest):
-    """Start LangGraph analysis - exact same as CLI main.py analyze"""
-    print(f"[ANALYZE] Starting analysis for job {job_id}")
-    print(f"[ANALYZE] Files: {[os.path.basename(f) for f in request.file_paths]}")
-    print(f"[ANALYZE] Options: detailed={request.detailed}, rag={request.rag}")
+@app.websocket("/api/progress/{job_id}")
+async def websocket_progress_enhanced(websocket: WebSocket, job_id: str):
+    """Enhanced WebSocket for real-time progress AND partial results"""
+    print(f"[WEBSOCKET] Enhanced client connecting for job: {job_id}")
+    await websocket.accept()
+    websocket_connections[job_id] = websocket
 
     try:
-        # Initialize job tracking
+        while True:
+            await asyncio.sleep(0.5)  # Faster updates
+
+            if job_id in analysis_jobs:
+                job = analysis_jobs[job_id]
+                
+                # Send progress updates
+                await websocket.send_json({
+                    "type": "progress",
+                    "job_id": job_id,
+                    "status": job["status"],
+                    "progress": job["progress"],
+                    "message": job["message"],
+                    "completed_files": job.get("completed_files", 0),
+                    "total_files": job.get("total_files", 0),
+                    "timestamp": datetime.now().isoformat()
+                })
+                
+                # Send partial results if available
+                if "partial_results" in job and job["partial_results"]:
+                    await websocket.send_json({
+                        "type": "partial_results",
+                        "job_id": job_id,
+                        "results": [result.dict() for result in job["partial_results"]],
+                        "completed_files": job.get("completed_files", 0),
+                        "total_files": job.get("total_files", 0),
+                        "timestamp": datetime.now().isoformat()
+                    })
+
+                if job["status"] in ["completed", "failed"]:
+                    # Send final results
+                    if job["status"] == "completed":
+                        await websocket.send_json({
+                            "type": "final_results", 
+                            "job_id": job_id,
+                            "results": [result.dict() for result in job.get("results", [])],
+                            "timestamp": datetime.now().isoformat()
+                        })
+                    break
+
+    except WebSocketDisconnect:
+        print(f"[WEBSOCKET] Client disconnected for job: {job_id}")
+        websocket_connections.pop(job_id, None)
+    except Exception as e:
+        print(f"[WEBSOCKET] Error: {e}")
+        websocket_connections.pop(job_id, None)
+
+@app.post("/api/analyze/{job_id}")
+async def start_analysis_progressive(job_id: str, request: AnalyzeRequest):
+    """Enhanced analysis with progressive file-by-file results"""
+    print(f"[ANALYZE] Starting progressive analysis for job {job_id}")
+    
+    try:
+        # Initialize job tracking with enhanced structure
         analysis_jobs[job_id] = {
             "job_id": job_id,
             "status": "processing",
-            "progress": 10,
-            "message": "Initializing LangGraph analysis...",
+            "progress": 5,
+            "message": "Initializing analysis...",
             "start_time": datetime.now(),
-            "file_paths": request.file_paths
+            "file_paths": request.file_paths,
+            "total_files": len(request.file_paths),
+            "completed_files": 0,
+            "partial_results": [],  # Store results as they complete
+            "failed_files": []
         }
 
-        await broadcast_progress(job_id, 10, "Initializing LangGraph analysis...")
+        # Start progressive analysis in background
+        asyncio.create_task(run_progressive_analysis(job_id, request))
+        
+        return {"success": True, "job_id": job_id, "progressive": True}
+        
+    except Exception as e:
+        print(f"[ANALYZE] Error: {e}")
+        analysis_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "failed",
+            "progress": 0,
+            "message": f"Analysis failed: {str(e)}",
+            "start_time": datetime.now()
+        }
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
+async def run_progressive_analysis(job_id: str, request: AnalyzeRequest):
+    """Run analysis file by file with progressive updates"""
+    job = analysis_jobs[job_id]
+    
+    try:
         # Initialize LangGraph system
-        print("[ANALYZE] Initializing LangGraph multi-agent system...")
         analyzer = LangGraphCQI(enable_rag=request.rag, enable_cache=True, use_langgraph=True)
-
-        await broadcast_progress(job_id, 30, "LangGraph multi-agent system ready...")
-
-        results = []
+        
+        job["progress"] = 10
+        job["message"] = "LangGraph system initialized..."
+        await broadcast_progress(job_id, 10, "Analysis system ready")
+        
         total_files = len(request.file_paths)
-
+        
         for i, file_path in enumerate(request.file_paths):
-            progress = 30 + int((i / total_files) * 60)
             filename = os.path.basename(file_path)
-
-            analysis_jobs[job_id]["progress"] = progress
-            analysis_jobs[job_id]["message"] = f"Analyzing {filename}..."
-
-            await broadcast_progress(job_id, progress, f"Analyzing {filename}...")
-
-            print(f"[ANALYZE] Processing: {filename}")
-
-            # Run LangGraph analysis (same as CLI)
+            
+            # Update progress for current file
+            base_progress = 10 + int((i / total_files) * 80)
+            job["progress"] = base_progress
+            job["message"] = f"Analyzing {filename}... ({i+1}/{total_files})"
+            
+            await broadcast_progress(job_id, base_progress, f"Analyzing {filename}...")
+            
             try:
+                # Analyze single file
                 result = await analyzer.analyze_file(
                     file_path,
                     selected_agents=None,
                     detailed=request.detailed
                 )
-
+                
+                # Convert to API format
                 api_result = convert_langgraph_output_to_api_format(result, job_id, file_path)
-                results.append(api_result)
-
-                print(f"[ANALYZE] Completed: {filename} - {api_result.total_issues} issues found")
-            
+                
+                # Add to partial results immediately
+                job["partial_results"].append(api_result)
+                job["completed_files"] = i + 1
+                
+                # Update progress after file completion
+                file_progress = 10 + int(((i + 1) / total_files) * 80)
+                job["progress"] = file_progress
+                job["message"] = f"Completed {filename} - {api_result.total_issues} issues found"
+                
+                print(f"[PROGRESSIVE] File {i+1}/{total_files} completed: {filename}")
+                
+                # Broadcast file completion with partial results
+                await broadcast_progress(job_id, file_progress, f"✅ {filename} analyzed - {api_result.total_issues} issues")
+                await broadcast_partial_results(job_id, job["partial_results"])
+                
             except Exception as file_error:
-                print(f"[ANALYZE] Error analyzing {filename}: {file_error}")
-                # Continue with other files
+                print(f"[PROGRESSIVE] Error analyzing {filename}: {file_error}")
+                job["failed_files"].append({"file": file_path, "error": str(file_error)})
                 continue
-
-        # Complete analysis
-        analysis_jobs[job_id]["status"] = "completed"
-        analysis_jobs[job_id]["progress"] = 100
-        analysis_jobs[job_id]["message"] = "Analysis completed!"
-        analysis_jobs[job_id]["results"] = results
-        analysis_jobs[job_id]["completion_time"] = datetime.now()
-
-        await broadcast_progress(job_id, 100, "Analysis completed!")
-
-        print(f"[ANALYZE] Job {job_id} completed successfully with {len(results)} files analyzed")
-
-        return {"success": True, "job_id": job_id, "results_count": len(results)}
-
+        
+        # Mark as completed
+        job["status"] = "completed"
+        job["progress"] = 100
+        job["message"] = f"Analysis completed! {len(job['partial_results'])} files analyzed"
+        job["results"] = job["partial_results"]  # Copy to final results
+        job["completion_time"] = datetime.now()
+        
+        await broadcast_progress(job_id, 100, "🎉 Analysis completed!")
+        
     except Exception as e:
-        print(f"[ANALYZE] Error: {e}")
-        # Mark job as failed
-        if job_id in analysis_jobs:
-            analysis_jobs[job_id]["status"] = "failed"
-            analysis_jobs[job_id]["message"] = f"Analysis failed: {str(e)}"
-        else:
-            analysis_jobs[job_id] = {
-                "job_id": job_id,
-                "status": "failed",
-                "progress": 0,
-                "message": f"Analysis failed: {str(e)}",
-                "start_time": datetime.now()
-            }
-
-        await broadcast_progress(job_id, 0, f"Analysis failed: {str(e)}")
-
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+        print(f"[PROGRESSIVE] Fatal error: {e}")
+        job["status"] = "failed"
+        job["progress"] = 0
+        job["message"] = f"Analysis failed: {str(e)}"
+        await broadcast_progress(job_id, 0, f"❌ Analysis failed: {str(e)}")
 
 @app.get("/api/status/{job_id}")
 async def get_analysis_status(job_id: str):
@@ -670,6 +809,10 @@ async def get_analysis_results(job_id: str):
 
     results = job.get("results", [])
     
+    # Convert AnalysisResult objects to dict for JSON serialization
+    if results and hasattr(results[0], 'dict'):
+        results = [result.dict() for result in results]
+    
     # Enhance with GitHub metadata if this was a GitHub analysis
     response_data = {
         "success": True,
@@ -695,11 +838,33 @@ async def get_analysis_results(job_id: str):
     
     return response_data
 
-qa_agents: Dict[str, EnhancedQAAgent] = {}
+@app.get("/api/partial-results/{job_id}")
+async def get_partial_results(job_id: str):
+    """FIXED: Get current partial results for progressive display"""
+    if job_id not in analysis_jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    job = analysis_jobs[job_id]
+    partial_results = job.get("partial_results", [])
+    
+    # Convert AnalysisResult objects to dict for JSON serialization
+    if partial_results and hasattr(partial_results[0], 'dict'):
+        partial_results = [result.dict() for result in partial_results]
+    
+    return {
+        "success": True,
+        "partial": True,
+        "completed_files": len(partial_results),
+        "total_files": job.get("total_files", 0),
+        "progress": job.get("progress", 0),
+        "job_id": job_id,
+        "results": partial_results,
+        "github_metadata": job.get("github_metadata")
+    }
 
-# FIXED: Enhanced start_chat_session to handle GitHub repos properly
 @app.post("/api/chat/start")
 async def start_chat_session(request: ChatStartRequest):
+    """ENHANCED: Start chat session with GitHub support"""
     try:
         session_id = generate_job_id()
         
@@ -769,9 +934,9 @@ async def start_chat_session(request: ChatStartRequest):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to start chat: {str(e)}")
 
-# Fix the send_chat_message endpoint
 @app.post("/api/chat/message")
 async def send_chat_message(request: ChatMessage):
+    """Send chat message"""
     try:
         if request.session_id not in qa_agents:
             raise HTTPException(status_code=404, detail="Chat session not found")
@@ -802,177 +967,12 @@ async def send_chat_message(request: ChatMessage):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Chat message failed: {str(e)}")
 
-@app.websocket("/api/progress/{job_id}")
-async def websocket_progress(websocket: WebSocket, job_id: str):
-    """WebSocket for real-time progress updates"""
-    print(f"[WEBSOCKET] Client connecting for job: {job_id}")
-    await websocket.accept()
-    websocket_connections[job_id] = websocket
-
-    try:
-        while True:
-            await asyncio.sleep(1)
-
-            if job_id in analysis_jobs:
-                job = analysis_jobs[job_id]
-                await websocket.send_json({
-                    "type": "heartbeat",
-                    "job_id": job_id,
-                    "status": job["status"],
-                    "progress": job["progress"],
-                    "message": job["message"]
-                })
-
-                if job["status"] in ["completed", "failed"]:
-                    print(f"[WEBSOCKET] Job {job_id} finished, closing connection")
-                    break
-
-    except WebSocketDisconnect:
-        print(f"[WEBSOCKET] Client disconnected for job: {job_id}")
-        websocket_connections.pop(job_id, None)
-    except Exception as e:
-        print(f"[WEBSOCKET] Error: {e}")
-        websocket_connections.pop(job_id, None)
-
-# ---------------------------
-# Development endpoint for testing
-# ---------------------------
-
-@app.get("/api/test")
-async def test_endpoint():
-    """Test endpoint for development"""
-    return {
-        "message": "API is working!",
-        "active_jobs": len(analysis_jobs),
-        "active_sessions": len(qa_agents),
-        "websocket_connections": len(websocket_connections),
-        "timestamp": datetime.now().isoformat()
-    }
-
-
-class GitHubAnalyzeRequest(BaseModel):
-    repo_url: str
-    branch: str = "main"
-    agents: List[str] = ["security", "performance", "complexity", "documentation"]
-    detailed: bool = True
-
-class GitHubValidationResponse(BaseModel):
-    valid: bool
-    owner: Optional[str] = None
-    repo_name: Optional[str] = None
-    description: Optional[str] = None
-    language: Optional[str] = None
-    branches: Optional[List[str]] = None
-    error: Optional[str] = None
-
 # ========== GITHUB INTEGRATION ENDPOINTS ==========
-
-@app.post("/api/github/analyze")
-async def analyze_github_repository(request: GitHubAnalyzeRequest):
-    job_id = generate_job_id()
-    temp_dir = None
-    
-    try:
-        # Initialize GitHub analyzer
-        github_analyzer = GitHubRepoAnalyzer()
-        
-        # Download repository
-        temp_dir = await github_analyzer.download_repo(request.repo_url, request.branch)
-        print(f"[GITHUB-API] Repository downloaded to: {temp_dir}")
-        
-        # IMPORTANT: Store temp directory globally like file uploads
-        github_temp_dirs[job_id] = temp_dir
-        
-        # Get repository statistics
-        repo_stats = github_analyzer.get_repository_stats(temp_dir)
-        
-        # Use existing file discovery logic
-        from main import LangGraphCQI
-        cqi = LangGraphCQI(enable_rag=True, enable_cache=True)
-        code_files = cqi._discover_files(temp_dir)
-        
-        # Initialize job tracking - SAME AS FILE UPLOAD
-        analysis_jobs[job_id] = {
-            "job_id": job_id,
-            "status": "processing",
-            "progress": 20,
-            "message": f"Downloaded {request.repo_url}, analyzing {len(code_files)} files...",
-            "start_time": datetime.now(),
-            "file_paths": code_files,
-            "repo_url": request.repo_url,
-            "branch": request.branch,
-            "temp_dir": temp_dir,  # Store like upload_dir
-            "repo_stats": repo_stats,
-            "is_github": True,
-            "github_metadata": {
-                "repo_url": request.repo_url,
-                "branch": request.branch,
-                "stats": repo_stats,
-                "temp_dir": temp_dir
-            }
-        }
-        
-        await broadcast_progress(job_id, 20, f"Repository downloaded, analyzing {len(code_files)} files...")
-        
-        # Use existing analysis logic
-        analysis_request = AnalyzeRequest(
-            file_paths=code_files,
-            detailed=request.detailed,
-            rag=True
-        )
-        
-        # Start analysis using existing pipeline
-        result = await start_analysis(job_id, analysis_request)
-        
-        print(f"[GITHUB-API] Analysis completed for {request.repo_url}")
-        print(f"[GITHUB-API] Temp directory preserved: {temp_dir}")
-        
-        # RETURN temp_dir in response (like file upload returns upload_dir)
-        return {
-            "success": True,
-            "job_id": job_id,
-            "repo_url": request.repo_url,
-            "branch": request.branch,
-            "files_analyzed": len(code_files),
-            "repo_stats": repo_stats,
-            "upload_dir": temp_dir,  # Use same key as file upload!
-            "temp_dir": temp_dir,    # Also include for backward compatibility
-            "total_files": len(code_files)
-        }
-        
-    except Exception as e:
-        print(f"[GITHUB-API] Error: {str(e)}")
-        
-        # Clean up temp directory ONLY on error
-        if temp_dir and os.path.exists(temp_dir):
-            try:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                print(f"[GITHUB-API] Cleaned up temp directory on error: {temp_dir}")
-            except:
-                pass
-        
-        # Mark job as failed
-        analysis_jobs[job_id] = {
-            "job_id": job_id,
-            "status": "failed",
-            "progress": 0,
-            "message": f"GitHub analysis failed: {str(e)}",
-            "start_time": datetime.now(),
-            "is_github": True
-        }
-        
-        await broadcast_progress(job_id, 0, f"Analysis failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"GitHub analysis failed: {str(e)}")
-
-    # REMOVE the finally block completely - no cleanup!
-
-class GitHubValidateRequest(BaseModel):
-    repo_url: str
 
 @app.post("/api/github/validate")
 async def validate_github_repository(request: GitHubValidateRequest):
-    repo_url = request.repo_url
     """Validate GitHub repository URL and get metadata"""
+    repo_url = request.repo_url
     
     print(f"[GITHUB-API] Validating repository: {repo_url}")
     
@@ -1017,7 +1017,89 @@ async def get_repository_branches(owner: str, repo: str):
             "branches": ["main", "master"]  # Fallback
         }
 
-# IMPORTANT: Cleanup endpoint for managing temp directories
+@app.post("/api/github/analyze")
+async def analyze_github_repository_progressive(request: GitHubAnalyzeRequest):
+    """ENHANCED: Progressive GitHub repository analysis"""
+    job_id = generate_job_id()
+    temp_dir = None
+    
+    try:
+        # Download repository
+        github_analyzer = GitHubRepoAnalyzer()
+        temp_dir = await github_analyzer.download_repo(request.repo_url, request.branch)
+        repo_stats = github_analyzer.get_repository_stats(temp_dir)
+        
+        # Discover files
+        from main import LangGraphCQI
+        cqi = LangGraphCQI(enable_rag=True, enable_cache=True)
+        code_files = cqi._discover_files(temp_dir)
+        
+        # Initialize progressive job
+        analysis_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "processing", 
+            "progress": 15,
+            "message": f"Downloaded {request.repo_url}, analyzing {len(code_files)} files...",
+            "start_time": datetime.now(),
+            "file_paths": code_files,
+            "total_files": len(code_files),
+            "completed_files": 0,
+            "partial_results": [],
+            "repo_url": request.repo_url,
+            "branch": request.branch,
+            "temp_dir": temp_dir,
+            "repo_stats": repo_stats,
+            "is_github": True,
+            "github_metadata": {
+                "repo_url": request.repo_url,
+                "branch": request.branch,
+                "stats": repo_stats,
+                "temp_dir": temp_dir
+            }
+        }
+        
+        # Start progressive analysis
+        analysis_request = AnalyzeRequest(
+            file_paths=code_files,
+            detailed=request.detailed,
+            rag=True,
+            progressive=True
+        )
+        
+        asyncio.create_task(run_progressive_analysis(job_id, analysis_request))
+        
+        return {
+            "success": True,
+            "job_id": job_id,
+            "repo_url": request.repo_url,
+            "branch": request.branch,
+            "files_analyzed": len(code_files),
+            "repo_stats": repo_stats,
+            "upload_dir": temp_dir,
+            "temp_dir": temp_dir,
+            "total_files": len(code_files),
+            "progressive": True  # Indicate this supports progressive updates
+        }
+        
+    except Exception as e:
+        print(f"[GITHUB-PROGRESSIVE] Error: {str(e)}")
+        if temp_dir and os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            except:
+                pass
+        
+        analysis_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "failed",
+            "progress": 0,
+            "message": f"GitHub analysis failed: {str(e)}",
+            "start_time": datetime.now(),
+            "is_github": True
+        }
+        
+        raise HTTPException(status_code=500, detail=f"GitHub analysis failed: {str(e)}")
+
 @app.delete("/api/github/cleanup/{job_id}")
 async def cleanup_github_temp_dir(job_id: str):
     """Clean up GitHub temporary directory"""
@@ -1035,7 +1117,22 @@ async def cleanup_github_temp_dir(job_id: str):
         print(f"[CLEANUP] Error: {e}")
         return {"success": False, "error": str(e)}
 
-# OPTIONAL: Add a debug endpoint to check GitHub job status
+# ---------------------------
+# Development and Debug endpoints
+# ---------------------------
+
+@app.get("/api/test")
+async def test_endpoint():
+    """Test endpoint for development"""
+    return {
+        "message": "API is working!",
+        "active_jobs": len(analysis_jobs),
+        "active_sessions": len(qa_agents),
+        "websocket_connections": len(websocket_connections),
+        "progressive_analysis": True,
+        "timestamp": datetime.now().isoformat()
+    }
+
 @app.get("/api/debug/github-jobs")
 async def debug_github_jobs():
     """Debug endpoint to check GitHub job tracking"""
@@ -1045,11 +1142,12 @@ async def debug_github_jobs():
         if job.get("is_github"):
             github_jobs[job_id] = {
                 "repo_url": job.get("repo_url"),
-                "normalized_repo_url": job.get("normalized_repo_url"),
                 "branch": job.get("branch"),
                 "temp_dir": job.get("temp_dir"),
                 "temp_dir_exists": os.path.exists(job.get("temp_dir", "")),
                 "status": job.get("status"),
+                "completed_files": job.get("completed_files", 0),
+                "total_files": job.get("total_files", 0),
                 "start_time": job.get("start_time").isoformat() if job.get("start_time") else None
             }
     
@@ -1064,11 +1162,12 @@ async def debug_github_jobs():
 # ---------------------------
 if __name__ == "__main__":
     import uvicorn
-    print("🚀 Starting LangGraph Code Quality Intelligence API...")
-    print("📊 Frontend will receive exact same output as CLI main.py analyze")
-    print("🔗 CORS enabled for localhost:3000, localhost:5173, localhost:5174")
+    print("🚀 Starting Enhanced LangGraph Code Quality Intelligence API...")
+    print("📊 Progressive analysis with real-time updates enabled")
+    print("🔗 CORS enabled for all origins")
     
-    # Use PORT environment variable for deployment (DigitalOcean, Render, Heroku, etc.)
+    # Use PORT environment variable for deployment
     port = int(os.environ.get("PORT", 8000))
     print(f"💡 Access test endpoint at: http://localhost:{port}/api/test")
+    print(f"🔄 Progressive analysis: http://localhost:{port}/api/partial-results/{{job_id}}")
     uvicorn.run(app, host="0.0.0.0", port=port, reload=False)
