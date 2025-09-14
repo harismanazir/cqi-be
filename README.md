@@ -31,7 +31,7 @@ pip install uv
 
 ```bash
 # Clone the repository
-git clone <your-repo-url>
+git clone https://github.com/harismanazir/cqi-be
 cd cqi
 
 # Create virtual environment and install dependencies
@@ -231,6 +231,18 @@ uvicorn api_backend:app --host 0.0.0.0 --port 8000
 
 # API endpoints available at http://localhost:8000/docs
 ```
+
+## 🖥️ Frontend Setup
+
+To set up the frontend interface:
+
+1. Clone the frontend repository:
+```bash
+git clone https://github.com/harismanazir/cqi-fe
+cd cqi-fe
+```
+
+2. Follow the setup instructions in the frontend repository's README.
 
 ## 📁 Project Structure
 
