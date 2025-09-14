@@ -35,8 +35,13 @@ git clone <your-repo-url>
 cd cqi
 
 # Create virtual environment and install dependencies
-uv venv
+uv venv --python 3.11
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install PyTorch CPU-only first (prevents dependency conflicts)
+uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Then install remaining dependencies
 uv pip install -r requirements.txt
 ```
 
@@ -58,18 +63,65 @@ GITHUB_TOKEN=your_github_token_here
 
 ### Using CLI Tool
 
+#### Basic Analysis Commands
+
 ```bash
-# Direct CLI interface
+# Analyze local file or directory
+python atlan-code-analyze.py --path="/path/to/code"
+
+# Detailed analysis with comprehensive reports
 python atlan-code-analyze.py --path="/path/to/code" --detailed
 
 # Analyze GitHub repository
 python atlan-code-analyze.py --repo="https://github.com/user/repo"
 
-# Interactive mode with repository
+# Analyze specific branch
+python atlan-code-analyze.py --repo="https://github.com/user/repo" --branch="develop"
+```
+
+#### Interactive Q&A Mode
+
+```bash
+# Start Q&A session for local code
+python atlan-code-analyze.py --qa --path="/path/to/code"
+
+# Interactive mode with GitHub repository
 python atlan-code-analyze.py --qa --repo="https://github.com/user/repo"
 ```
 
-### Basic Analysis
+#### Advanced Options
+
+```bash
+# Use specific agents only
+python atlan-code-analyze.py --path="." --agents="security,performance,complexity"
+
+# All available agents: security,performance,complexity,documentation,testing,duplication
+python atlan-code-analyze.py --path="." --agents="security,performance,complexity,documentation,testing,duplication"
+
+# Limit number of files analyzed
+python atlan-code-analyze.py --path="." --max-files=50
+
+# Disable RAG system for small codebases
+python atlan-code-analyze.py --path="." --no-rag
+
+# Disable caching for fresh analysis
+python atlan-code-analyze.py --path="." --no-cache
+
+# Combined advanced analysis
+python atlan-code-analyze.py --path="." --agents="security,performance" --detailed --max-files=100
+```
+
+#### CLI Help & Version
+
+```bash
+# Show help and all available options
+python atlan-code-analyze.py --help
+
+# Show version
+python atlan-code-analyze.py --version
+```
+
+### Basic Analysis (Alternative if CLI tool doesn't work)
 
 ```bash
 # Analyze a single file
