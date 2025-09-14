@@ -279,7 +279,8 @@ class LangGraphMultiAgentAnalyzer:
             processing_time=processing_time,
             tokens_used=result.get('tokens_used', 0),
             confidence=result.get('confidence', 0.8),
-            status='completed'
+            status='completed',
+            llm_calls=result.get('llm_calls', 0)  # Include LLM call count
         )
         
         # Extract insights to share with other agents
@@ -294,9 +295,10 @@ class LangGraphMultiAgentAnalyzer:
             'agent_results': {agent_name: agent_result},
             'pending_agents': [a for a in state['pending_agents'] if a != agent_name],
             'total_tokens': state['total_tokens'] + agent_result.tokens_used,
-            'total_llm_calls': state['total_llm_calls'] + 1
+            'total_llm_calls': state['total_llm_calls'] + agent_result.llm_calls  # Use actual LLM call count
         }
-        
+
+
         return updates
     
     async def _aggregate_results(self, state: WorkflowState) -> Dict[str, Any]:

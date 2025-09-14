@@ -89,12 +89,14 @@ RESPONSE FORMAT - Valid JSON only:
       "line_number": 123,
       "suggestion": "Specific optimization recommendation",
       "category": "performance",
-      "evidence": "Code showing the inefficient pattern"
+      "evidence": "Brief description without quotes or special characters"
     }}
   ],
   "metrics": {{"performance_score": 0.7}},
   "confidence": 0.85
 }}
+
+CRITICAL: For the "evidence" field, provide simple descriptions only - NO code snippets, quotes, or special characters that could break JSON parsing.
 
 REMEMBER: If the code is already efficient, return empty issues array. Focus on real bottlenecks."""
     
@@ -112,7 +114,8 @@ REMEMBER: If the code is already efficient, return empty issues array. Focus on 
                 'metrics': {'performance_score': 1.0, 'confidence': 0.9},
                 'confidence': 0.9,
                 'tokens_used': 0,
-                'processing_time': 0.01
+                'processing_time': 0.01,
+                'llm_calls': 0
             }
         
         # Run full analysis if patterns found

@@ -91,12 +91,14 @@ RESPONSE FORMAT - Valid JSON only:
       "line_number": 123,
       "suggestion": "Specific fix recommendation",
       "category": "security",
-      "evidence": "Exact code snippet showing the vulnerability"
+      "evidence": "Brief description without quotes or code snippets"
     }}
   ],
   "metrics": {{"security_score": 0.8}},
   "confidence": 0.95
 }}
+
+CRITICAL: For the "evidence" field, provide a simple description only - NO code snippets, quotes, or special characters that could break JSON parsing.
 
 REMEMBER: If the code is secure, return empty issues array. Quality and accuracy over quantity."""
     

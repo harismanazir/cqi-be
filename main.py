@@ -178,6 +178,10 @@ class LangGraphCQI:
                         'status': 'completed'
                     }
         
+        # Debug LLM calls
+        llm_calls_debug = result.get('llm_calls', result.get('total_llm_calls', 0))
+        print(f"[MAIN] Debug LLM calls: llm_calls={result.get('llm_calls')}, total_llm_calls={result.get('total_llm_calls')}, final={llm_calls_debug}")
+
         # Build normalized result
         normalized = {
             'file_path': file_path,
@@ -392,7 +396,6 @@ class LangGraphCQI:
         print(f"[ISSUES] Total Issues: {result['total_issues']}")
         print(f"[TIME] Processing Time: {result['processing_time']:.2f}s")
         print(f"[TOKENS] LLM Tokens Used: {result.get('total_tokens', 0):,}")
-        print(f"[CALLS] LLM API Calls: {result.get('total_llm_calls', 0)}")
         
         # Cache hit info
         if result.get('cache_hit'):

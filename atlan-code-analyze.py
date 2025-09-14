@@ -278,7 +278,6 @@ class AtlanCodeAnalyzer:
         # Performance metrics
         print(f"\n⏱️ Processing Time: {result.get('processing_time', 0):.2f}s")
         print(f"🔢 LLM Tokens: {result.get('total_tokens', 0):,}")
-        print(f"📞 API Calls: {result.get('total_llm_calls', 0)}")
         
         # Workflow info
         workflow_engine = result.get('workflow_engine', 'unknown')
@@ -390,11 +389,11 @@ async def main():
     
     # ASCII Art Banner
     print("""
-╔═══════════════════════════════════════════════════════════════╗
-║                    ATLAN CODE ANALYZER                       ║
-║           AI-Powered Code Quality Intelligence                ║
-║                  Powered by LangGraph                        ║
-╚═══════════════════════════════════════════════════════════════╝
+================================================================
+                    ATLAN CODE ANALYZER
+           AI-Powered Code Quality Intelligence
+                  Powered by LangGraph
+================================================================
     """)
     
     parser = create_parser()

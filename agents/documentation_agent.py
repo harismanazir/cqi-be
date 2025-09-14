@@ -111,12 +111,14 @@ RESPONSE FORMAT - Valid JSON only:
       "line_number": 123,
       "suggestion": "Specific documentation to add",
       "category": "documentation",
-      "evidence": "Function/class signature that needs documentation"
+      "evidence": "Brief description without quotes or special characters"
     }}
   ],
   "metrics": {{"documentation_coverage": 0.4}},
   "confidence": 0.80
 }}
+
+CRITICAL: For the "evidence" field, provide simple descriptions only - NO code snippets, quotes, or special characters that could break JSON parsing.
 
 REMEMBER: If code is simple or already well-documented, return empty issues array. Focus on meaningful documentation gaps."""
     
@@ -134,7 +136,8 @@ REMEMBER: If code is simple or already well-documented, return empty issues arra
                 'metrics': {'documentation_coverage': 1.0, 'confidence': 0.9},
                 'confidence': 0.9,
                 'tokens_used': 0,
-                'processing_time': 0.01
+                'processing_time': 0.01,
+                'llm_calls': 0
             }
         
         # Run full analysis if issues found

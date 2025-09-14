@@ -340,7 +340,8 @@ REMEMBER: Return empty issues array if no real {self.agent_type} issues exist. Q
                     'metrics': {'confidence': 1.0, 'skipped_reason': 'minimal_code'},
                     'confidence': 1.0,
                     'tokens_used': 0,
-                    'processing_time': 0.01
+                    'processing_time': 0.01,
+                    'llm_calls': 0
                 }
             
             if not self.validator.has_actual_functionality(code, language):
@@ -353,7 +354,8 @@ REMEMBER: Return empty issues array if no real {self.agent_type} issues exist. Q
                     'metrics': {'confidence': 1.0, 'skipped_reason': 'no_functionality'},
                     'confidence': 1.0,
                     'tokens_used': 0,
-                    'processing_time': 0.01
+                    'processing_time': 0.01,
+                    'llm_calls': 0
                 }
             
             prompt = self.create_analysis_prompt(code, file_path, language)
@@ -367,7 +369,8 @@ REMEMBER: Return empty issues array if no real {self.agent_type} issues exist. Q
                     'metrics': {'confidence': 1.0},
                     'confidence': 1.0,
                     'tokens_used': 0,
-                    'processing_time': 0.01
+                    'processing_time': 0.01,
+                    'llm_calls': 0
                 }
             
             response = await self.llm.generate(prompt, max_tokens=1500)
@@ -381,7 +384,10 @@ REMEMBER: Return empty issues array if no real {self.agent_type} issues exist. Q
             result['file_path'] = file_path
             result['tokens_used'] = len(prompt) // 4  # Rough estimation
             result['processing_time'] = time.time() - start_time
-            
+            # Track actual LLM calls
+            llm_calls = getattr(self.llm, 'call_count', 1) if self.llm else 1
+            result['llm_calls'] = llm_calls
+
             self.total_tokens += result['tokens_used']
             self.processing_time += result['processing_time']
             
@@ -410,33 +416,62 @@ REMEMBER: Return empty issues array if no real {self.agent_type} issues exist. Q
     def _parse_and_validate_response(self, response: str, code: str, file_path: str) -> Dict[str, Any]:
         """Enhanced JSON parsing with strict validation"""
         import re
-        
+
         # Try direct JSON parsing first
         try:
-            result = json.loads(response)
-            if self._validate_response_structure(result):
-                return result
+            # Find the complete JSON object
+            json_start = response.find('{')
+            if json_start != -1:
+                # Count braces to find the end of JSON
+                brace_count = 0
+                json_end = json_start
+                for i in range(json_start, len(response)):
+                    if response[i] == '{':
+                        brace_count += 1
+                    elif response[i] == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            json_end = i + 1
+                            break
+
+                json_content = response[json_start:json_end]
+                result = json.loads(json_content)
+                if self._validate_response_structure(result):
+                    return result
         except json.JSONDecodeError:
             pass
-        
+
         # Clean and extract JSON
         response = response.strip()
-        
+
+        # Remove markdown code blocks if present
+        response = re.sub(r'```json\s*', '', response)
+        response = re.sub(r'```\s*$', '', response)
+
+        # Remove preamble text before JSON
+        json_start = response.find('{')
+        if json_start != -1:
+            response = response[json_start:]
+
         # Find JSON object with proper validation
         json_match = re.search(r'\{.*?"issues"\s*:\s*\[.*?\].*?\}', response, re.DOTALL)
         if json_match:
             try:
                 json_str = json_match.group(0)
+
                 # Clean common issues
                 json_str = re.sub(r',\s*}', '}', json_str)
                 json_str = re.sub(r',\s*]', ']', json_str)
-                
+
+                # Fix unescaped quotes in evidence fields
+                json_str = self._fix_json_escaping(json_str)
+
                 result = json.loads(json_str)
                 if self._validate_response_structure(result):
                     return result
             except json.JSONDecodeError:
                 pass
-        
+
         # If all parsing fails, return empty result (no fake issues)
         print(f"[WARNING] Could not parse LLM response for {os.path.basename(file_path)}, returning empty result")
         return {
@@ -451,7 +486,7 @@ REMEMBER: Return empty issues array if no real {self.agent_type} issues exist. Q
             return False
         if 'issues' not in result or not isinstance(result['issues'], list):
             return False
-        
+
         # Validate each issue structure
         for issue in result['issues']:
             if not isinstance(issue, dict):
@@ -459,35 +494,75 @@ REMEMBER: Return empty issues array if no real {self.agent_type} issues exist. Q
             required_fields = ['severity', 'title', 'description', 'line_number', 'suggestion']
             if not all(field in issue for field in required_fields):
                 return False
-        
+
         return True
-    
+
+    def _fix_json_escaping(self, json_str: str) -> str:
+        """Fix common JSON escaping issues in LLM responses"""
+        # Fix unescaped quotes inside evidence fields
+        # Look for evidence fields and properly escape quotes within them
+
+        def fix_evidence_field(match):
+            full_match = match.group(0)
+            evidence_content = match.group(1)
+
+            # Escape unescaped quotes inside the evidence content
+            # But be careful not to double-escape already escaped quotes
+            fixed_content = evidence_content.replace('\\"', '__TEMP_ESCAPED__')  # Preserve existing escapes
+            fixed_content = fixed_content.replace('"', '\\"')  # Escape unescaped quotes
+            fixed_content = fixed_content.replace('__TEMP_ESCAPED__', '\\"')  # Restore original escapes
+
+            return f'"evidence": "{fixed_content}"'
+
+        # Pattern to match evidence fields with their content
+        evidence_pattern = r'"evidence":\s*"([^"]*(?:\\.[^"]*)*)"'
+
+        # First try: simple escape fix
+        try:
+            fixed_str = re.sub(evidence_pattern, fix_evidence_field, json_str)
+            # Test if it parses
+            json.loads(fixed_str)
+            return fixed_str
+        except:
+            pass
+
+        # Fallback: more aggressive fix - remove problematic evidence fields entirely
+        try:
+            # Remove evidence fields that are causing issues
+            simplified_str = re.sub(r',?\s*"evidence":\s*"[^"]*"(?:\s*,)?', '', json_str)
+            # Clean up any double commas
+            simplified_str = re.sub(r',\s*,', ',', simplified_str)
+            # Test if it parses
+            json.loads(simplified_str)
+            return simplified_str
+        except:
+            pass
+
+        return json_str  # Return original if all fixes fail
+
     def _validate_reported_issues(self, issues: List[Dict], code: str) -> List[Dict]:
         """Validate that reported issues actually exist in the code"""
         if not issues:
             return []
-        
+
         validated_issues = []
         code_lines = code.split('\n')
-        
+
         for issue in issues:
             line_number = issue.get('line_number', 0)
-            
+
             # Validate line number
             if line_number <= 0 or line_number > len(code_lines):
-                print(f"[VALIDATION] Skipping issue with invalid line number: {line_number}")
                 continue
-            
+
             # Basic validation - the issue should reference something that actually exists
             line_content = code_lines[line_number - 1] if line_number <= len(code_lines) else ""
-            
+
             # Skip obvious false positives (empty lines, comments only)
             if not line_content.strip() or line_content.strip().startswith('#') or line_content.strip().startswith('//'):
-                print(f"[VALIDATION] Skipping issue on empty/comment line: {line_number}")
                 continue
-            
+
             # Add evidence field with actual code
             issue['evidence'] = line_content.strip()
             validated_issues.append(issue)
-        
         return validated_issues

@@ -117,12 +117,14 @@ RESPONSE FORMAT - Valid JSON only:
       "line_number": 123,
       "suggestion": "Specific refactoring recommendation",
       "category": "complexity",
-      "evidence": "Measurement data (e.g., '65 lines', '5 levels deep')"
+      "evidence": "Brief measurement without quotes or special characters"
     }}
   ],
   "metrics": {{"complexity_score": 0.6}},
   "confidence": 0.90
 }}
+
+CRITICAL: For the "evidence" field, provide simple measurements only - NO quotes, code snippets, or special characters that could break JSON parsing.
 
 REMEMBER: If the code is well-structured and readable, return empty issues array. Focus on objective measurements."""
     
@@ -140,7 +142,8 @@ REMEMBER: If the code is well-structured and readable, return empty issues array
                 'metrics': {'complexity_score': 1.0, 'confidence': 0.9},
                 'confidence': 0.9,
                 'tokens_used': 0,
-                'processing_time': 0.01
+                'processing_time': 0.01,
+                'llm_calls': 0
             }
         
         # Run full analysis if issues found

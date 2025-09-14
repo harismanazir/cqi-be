@@ -27,6 +27,7 @@ class AgentResult:
     confidence: float
     status: str  # 'completed', 'failed', 'skipped'
     error_message: Optional[str] = None
+    llm_calls: int = 0  # Track actual LLM API calls
 
 @dataclass 
 class CodeAnalysisInput:
